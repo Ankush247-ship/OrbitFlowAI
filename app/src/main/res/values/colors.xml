@@ -1,0 +1,63 @@
+<resources>
+
+    <!-- PRIMARY: Electric Purple -->
+    <color name="colorPrimary">#7C3AED</color>
+    <color name="colorPrimaryVariant">#5B21B6</color>
+    <color name="colorOnPrimary">#FFFFFF</color>
+
+    <!-- SECONDARY: Vivid Blue -->
+    <color name="colorSecondary">#2563EB</color>
+    <color name="colorSecondaryVariant">#1D4ED8</color>
+    <color name="colorOnSecondary">#FFFFFF</color>
+
+    <!-- BACKGROUND: OLED Black -->
+    <color name="background">#000000</color>
+    <color name="colorOnBackground">#F2F2F2</color>
+
+    <!-- SURFACE: Cool Grays w/ subtle purple undertone -->
+    <color name="colorSurface">#12111A</color>
+    <color name="colorOnSurface">#F2F2F2</color>
+
+    <!-- UI SPECIFIC -->
+    <color name="statusBarColor">#000000</color>
+    <color name="navigationBarColor">#000000</color> <!-- Transparent/floating effect works better if base is black -->
+    <color name="cinemaBlack">#000000</color>
+    <color name="textColor">#F2F2F2</color>
+
+    <!-- CONTAINERS (Elevation levels) -->
+    <color name="surfaceContainerLowest">#000000</color>
+    <color name="surfaceContainer">#12111A</color>
+    <color name="surfaceContainerHigh">#1C1A28</color>
+    <color name="surfaceVariant">#252231</color>
+    <color name="floatingPanelBackground">#1C1A28</color>
+
+    <color name="primaryContainer">#7C3AED</color>
+    <color name="onPrimaryContainer">#FFFFFF</color>
+
+    <!-- TERTIARY / ACCENT: Vibrant Orange -->
+    <color name="tertiary">#FF8A00</color>
+    <color name="tertiaryContainer">#E67600</color>
+    <color name="onTertiary">#FFFFFF</color>
+
+    <!-- OUTLINES -->
+    <color name="outline">#3A3548</color>
+    <color name="outlineVariant">#282433</color>
+    <color name="iconSecondary">#9490A3</color>
+
+    <!-- TOOL COLORS -->
+    <color name="activeTool">#7C3AED</color>
+    <color name="activeToolBackground">#221A38</color> <!-- Subtle purple tint for active tool -->
+    <color name="inactiveTool">#9490A3</color>
+    <color name="inactiveToolBackground">#12111A</color>
+
+    <color name="toolTextActive">#7C3AED</color>
+    <color name="toolTextInactive">#9490A3</color>
+
+    <color name="sliderHalo">#1C1A28</color>
+
+    <!-- ACCENT GRADIENT (for launch screen / hero elements) -->
+    <color name="accentOrange">#FF8A00</color>
+    <color name="accentBlue">#2563EB</color>
+    <color name="accentPurple">#7C3AED</color>
+
+</resources>
