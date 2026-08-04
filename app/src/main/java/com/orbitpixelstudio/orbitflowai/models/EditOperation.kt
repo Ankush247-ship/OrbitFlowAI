@@ -409,6 +409,33 @@ sealed class EditOperation : Serializable {
     ) : EditOperation() {
         enum class BackgroundType { COLOR, IMAGE, BLUR }
     }
+
+    /**
+     * Background removal operation: replaces the video's real background with a
+     * solid color, a blurred copy of itself, or a picked image, using on-device
+     * ML Kit selfie segmentation (see BackgroundRemovalProcessor).
+     *
+     * Follows the same non-destructive pattern as SpeedMain/ReverseMain: the heavy
+     * work (frame extraction + per-frame segmentation + FFmpeg compositing) runs
+     * once as an async preprocessing step, and the result is cached to disk as
+     * [proxyUri]. The export pipeline treats that proxy exactly like a speed/reverse
+     * proxy — it becomes the effective source video for every downstream operation
+     * (trim, crop, overlays, filters, etc. keep applying on top of it unmodified),
+     * while [VideoProject.sourceUri] itself stays untouched.
+     */
+    data class RemoveBackgroundMain(
+        @SerializedName("backgroundType") val type: BackgroundType,
+        val colorHex: String = "#00B140",
+        val imageUri: Uri? = null,
+        val blurRadius: Int = 20,
+        val proxyUri: Uri? = null,
+        val id: String = System.nanoTime().toString()
+    ) : EditOperation() {
+        enum class BackgroundType { COLOR, IMAGE, BLUR }
+
+        /** True once the async matting/compositing pass has produced a usable proxy file. */
+        fun isReady(): Boolean = proxyUri != null
+    }
 }
 
 data class SubtitleCue(
@@ -484,4 +511,5 @@ val EditOperation.id: String
         is EditOperation.AddSubtitles -> id
         is EditOperation.Adjust -> id
         is EditOperation.CanvasBackground -> id
+        is EditOperation.RemoveBackgroundMain -> id
     }

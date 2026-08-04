@@ -373,6 +373,7 @@ class VideoEditingActivity : AppCompatActivity() {
     private var videoEditingToolbar: View? = null
     private var audioEditingToolbar: View? = null
     private var backgroundEditingToolbar: View? = null
+    private var removeBackgroundToolbar: View? = null
     private var speedEditingToolbar: View? = null
     private var cropEditingToolbar: View? = null
     private var cropOverlayView: com.orbitpixelstudio.orbitflowai.customviews.CropOverlayView? = null
@@ -1716,6 +1717,41 @@ class VideoEditingActivity : AppCompatActivity() {
             null
         }
 
+        removeBackgroundToolbar = try {
+            findViewById<View>(R.id.removeBackgroundToolbar)?.also { toolbar ->
+                toolbar.findViewById<View>(R.id.btnBackFromRemoveBackground)?.setBounceClickListener {
+                    exitRemoveBackgroundEditingMode()
+                }
+                toolbar.findViewById<View>(R.id.btnRemoveBackgroundDone)?.setBounceClickListener {
+                    exitRemoveBackgroundEditingMode()
+                }
+                toolbar.findViewById<View>(R.id.btnRemoveBgColor)?.setBounceClickListener {
+                    showCustomColorPicker("#00B140") { hexColor ->
+                        runBackgroundRemoval(
+                            type = EditOperation.RemoveBackgroundMain.BackgroundType.COLOR,
+                            colorHex = hexColor
+                        )
+                    }
+                }
+                toolbar.findViewById<View>(R.id.btnRemoveBgBlur)?.setBounceClickListener {
+                    runBackgroundRemoval(
+                        type = EditOperation.RemoveBackgroundMain.BackgroundType.BLUR,
+                        blurRadius = 25
+                    )
+                }
+                toolbar.findViewById<View>(R.id.btnRemoveBgImage)?.setBounceClickListener {
+                    pickRemoveBackgroundImage()
+                }
+                toolbar.findViewById<View>(R.id.btnRemoveBgNone)?.setBounceClickListener {
+                    viewModel.clearMainVideoBackgroundRemoval()
+                    Toast.makeText(this, "Original background restored", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Remove background toolbar not found: ${e.message}")
+            null
+        }
+
         keyframeEditingToolbar = try {
             findViewById<View>(R.id.keyframeEditingToolbar)?.also { toolbar ->
                 toolbar.findViewById<ImageButton>(R.id.btnKeyframeCancel)?.setBounceClickListener {
@@ -1798,6 +1834,11 @@ class VideoEditingActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnCanvasBackground)?.setBounceClickListener {
             setActiveToolButton(R.id.btnCanvasBackground)
             canvasBackgroundAction()
+        }
+
+        findViewById<ImageButton>(R.id.btnRemoveBackground)?.setBounceClickListener {
+            setActiveToolButton(R.id.btnRemoveBackground)
+            removeBackgroundAction()
         }
 
         findViewById<ImageButton>(R.id.btnOrbitAi)?.setBounceClickListener {
@@ -2422,6 +2463,121 @@ class VideoEditingActivity : AppCompatActivity() {
         setActiveToolButton(-1)
     }
 
+    private fun removeBackgroundAction() {
+        enterRemoveBackgroundEditingMode()
+    }
+
+    private fun enterRemoveBackgroundEditingMode() {
+        closeActiveEditingModes()
+        editingControlsWrapper.visibility = View.GONE
+        removeBackgroundToolbar?.visibility = View.VISIBLE
+    }
+
+    private fun exitRemoveBackgroundEditingMode() {
+        removeBackgroundToolbar?.visibility = View.GONE
+        editingControlsWrapper.visibility = View.VISIBLE
+        setActiveToolButton(-1)
+    }
+
+    private fun pickRemoveBackgroundImage() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/jpeg", "image/png", "image/webp"))
+        }
+        try {
+            startActivityForResult(intent, PICK_REMOVE_BG_IMAGE_REQUEST)
+        } catch (e: Exception) {
+            Toast.makeText(this, "No app found to handle image selection", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * Runs the full on-device background-removal pipeline for the current main
+     * clip and, on success, stores the resulting proxy on the operation so the
+     * export pipeline (and preview) pick it up automatically.
+     *
+     * This is a one-shot transform (see BackgroundRemovalProcessor) — it can take
+     * a while on longer clips since every frame is segmented individually, so we
+     * show inline progress in the toolbar rather than blocking with a modal.
+     */
+    private fun runBackgroundRemoval(
+        type: EditOperation.RemoveBackgroundMain.BackgroundType,
+        colorHex: String = "#00B140",
+        imagePath: String? = null,
+        blurRadius: Int = 20
+    ) {
+        val project = viewModel.project.value ?: return
+        val sourcePath = project.sourceUri.path?.takeIf { project.sourceUri.scheme == "file" }
+            ?: (if (::tempInputFile.isInitialized) tempInputFile.absolutePath else null)
+        if (sourcePath == null) {
+            Toast.makeText(this, "Could not resolve source video path", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val toolbar = removeBackgroundToolbar
+        val progressRow = toolbar?.findViewById<View>(R.id.removeBackgroundProgressRow)
+        val optionsRow = toolbar?.findViewById<View>(R.id.removeBackgroundOptionsScroll)
+        val progressBar = toolbar?.findViewById<android.widget.ProgressBar>(R.id.progressRemoveBackground)
+        val stageLabel = toolbar?.findViewById<TextView>(R.id.tvRemoveBackgroundStage)
+
+        progressRow?.visibility = View.VISIBLE
+        optionsRow?.visibility = View.GONE
+
+        val background = when (type) {
+            EditOperation.RemoveBackgroundMain.BackgroundType.COLOR ->
+                com.orbitpixelstudio.orbitflowai.services.BackgroundRemovalProcessor.Background.Color(colorHex)
+            EditOperation.RemoveBackgroundMain.BackgroundType.BLUR ->
+                com.orbitpixelstudio.orbitflowai.services.BackgroundRemovalProcessor.Background.Blur(blurRadius)
+            EditOperation.RemoveBackgroundMain.BackgroundType.IMAGE ->
+                com.orbitpixelstudio.orbitflowai.services.BackgroundRemovalProcessor.Background.Image(
+                    imagePath ?: run {
+                        Toast.makeText(this, "Pick an image first", Toast.LENGTH_SHORT).show()
+                        progressRow?.visibility = View.GONE
+                        optionsRow?.visibility = View.VISIBLE
+                        return
+                    }
+                )
+        }
+
+        lifecycleScope.launch {
+            val processor = com.orbitpixelstudio.orbitflowai.services.BackgroundRemovalProcessor(
+                applicationContext,
+                ffmpegEngine
+            )
+            val result = processor.process(
+                sourcePath = sourcePath,
+                background = background,
+                onProgress = { p ->
+                    runOnUiThread {
+                        stageLabel?.text = "${p.stage}…"
+                        progressBar?.progress = (p.fraction * 100).toInt()
+                    }
+                }
+            )
+            progressRow?.visibility = View.GONE
+            optionsRow?.visibility = View.VISIBLE
+
+            when (result) {
+                is com.orbitpixelstudio.orbitflowai.services.FFmpegRenderEngine.RenderResult.Success -> {
+                    viewModel.updateMainVideoBackgroundRemoval(
+                        type = type,
+                        colorHex = colorHex,
+                        imageUri = imagePath?.let { Uri.fromFile(File(it)) },
+                        blurRadius = blurRadius,
+                        proxyUri = Uri.fromFile(File(result.outputPath))
+                    )
+                    Toast.makeText(this@VideoEditingActivity, "Background removed", Toast.LENGTH_SHORT).show()
+                    exitRemoveBackgroundEditingMode()
+                }
+                is com.orbitpixelstudio.orbitflowai.services.FFmpegRenderEngine.RenderResult.Failure -> {
+                    Toast.makeText(this@VideoEditingActivity, "Background removal failed: ${result.error}", Toast.LENGTH_LONG).show()
+                }
+                else -> {}
+            }
+        }
+    }
+
     @SuppressLint("InflateParams")
     private fun textAction() {
         if (isTextEditingActive) {
@@ -2451,6 +2607,7 @@ class VideoEditingActivity : AppCompatActivity() {
         cropEditingToolbar?.visibility = View.GONE
         subtitlesEditingToolbar?.visibility = View.GONE
         backgroundEditingToolbar?.visibility = View.GONE
+        removeBackgroundToolbar?.visibility = View.GONE
     }
 
     private fun enterTextEditingMode(isReEditing: Boolean = false) {
@@ -4624,6 +4781,20 @@ class VideoEditingActivity : AppCompatActivity() {
                             imageUri = tempUri
                         )
                         updateCanvasBackgroundPreview()
+                    } else {
+                        Toast.makeText(this@VideoEditingActivity, "Failed to load image", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        } else if (requestCode == PICK_REMOVE_BG_IMAGE_REQUEST && resultCode == Activity.RESULT_OK) {
+            data?.data?.let { imageUri ->
+                lifecycleScope.launch {
+                    val tempFile = withContext(Dispatchers.IO) { copyContentUriToTempFile(imageUri, "remove_bg_image", ".png") }
+                    if (tempFile != null) {
+                        runBackgroundRemoval(
+                            type = EditOperation.RemoveBackgroundMain.BackgroundType.IMAGE,
+                            imagePath = tempFile.absolutePath
+                        )
                     } else {
                         Toast.makeText(this@VideoEditingActivity, "Failed to load image", Toast.LENGTH_SHORT).show()
                     }
@@ -8726,6 +8897,7 @@ class VideoEditingActivity : AppCompatActivity() {
         private const val PICK_SRT_REQUEST = 4
         private const val PICK_DIRECTORY_REQUEST = 5
         private const val PICK_BACKGROUND_IMAGE_REQUEST = 6
+        private const val PICK_REMOVE_BG_IMAGE_REQUEST = 106
     }
 }
 

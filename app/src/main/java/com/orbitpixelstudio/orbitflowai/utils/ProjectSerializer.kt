@@ -49,7 +49,7 @@ object ProjectSerializer {
             var opTypeStr = jsonObject.get("operationType")?.asString
             if (opTypeStr == null) {
                 val typeVal = jsonObject.get("type")?.asString
-                val validClasses = setOf("Trim", "SpeedMain", "ReverseMain", "MirrorMain", "Crop", "AddText", "Merge", "MaskMain", "MuteAudio", "Transition", "MuteClip", "ColorFilter", "AddBackgroundAudio", "AddImageOverlay", "AddSubtitles", "Adjust", "CanvasBackground")
+                val validClasses = setOf("Trim", "SpeedMain", "ReverseMain", "MirrorMain", "Crop", "AddText", "Merge", "MaskMain", "MuteAudio", "Transition", "MuteClip", "ColorFilter", "AddBackgroundAudio", "AddImageOverlay", "AddSubtitles", "Adjust", "CanvasBackground", "RemoveBackgroundMain")
                 
                 if (typeVal != null && validClasses.contains(typeVal)) {
                     opTypeStr = typeVal
@@ -80,6 +80,13 @@ object ProjectSerializer {
                 } else if (!jsonObject.has("backgroundType")) {
                      jsonObject.addProperty("backgroundType", "COLOR")
                 }
+            } else if (type == "RemoveBackgroundMain") {
+                val t = jsonObject.get("type")?.asString
+                if (t != null && t != "RemoveBackgroundMain") {
+                     jsonObject.addProperty("backgroundType", t)
+                } else if (!jsonObject.has("backgroundType")) {
+                     jsonObject.addProperty("backgroundType", "COLOR")
+                }
             }
             
             val clazz = when (type) {
@@ -100,6 +107,7 @@ object ProjectSerializer {
                 "AddSubtitles" -> EditOperation.AddSubtitles::class.java
                 "Adjust" -> EditOperation.Adjust::class.java
                 "CanvasBackground" -> EditOperation.CanvasBackground::class.java
+                "RemoveBackgroundMain" -> EditOperation.RemoveBackgroundMain::class.java
                 else -> null
             }
 

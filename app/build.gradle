@@ -84,6 +84,10 @@ dependencies {
     implementation 'com.google.android.exoplayer:exoplayer-core:2.19.1'
     implementation 'com.google.android.exoplayer:exoplayer-ui:2.19.1'
     implementation("com.antonkarpenko:ffmpeg-kit-full-gpl:2.1.0")
+
+    // On-device background removal (Background Removal feature) — fully offline,
+    // no network call, adds ~4.5MB to app size.
+    implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
     implementation 'com.google.android.material:material:1.9.0'
     implementation 'com.airbnb.android:lottie:3.4.0'
     implementation "com.mikepenz:aboutlibraries-core:11.2.3"

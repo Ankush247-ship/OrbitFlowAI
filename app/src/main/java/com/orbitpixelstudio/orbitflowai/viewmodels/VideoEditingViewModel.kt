@@ -171,6 +171,61 @@ class VideoEditingViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Sets or updates the background-removal proxy for the main video.
+     * [proxyUri] is null while BackgroundRemovalProcessor is still running — pass
+     * it once the on-device matting/compositing pass finishes and produces a file.
+     * Mirrors updateMainVideoSpeed/updateMainVideoReverse: the export pipeline
+     * picks this proxy up automatically once set (see resolveUriToPath usage).
+     */
+    fun updateMainVideoBackgroundRemoval(
+        type: EditOperation.RemoveBackgroundMain.BackgroundType,
+        colorHex: String = "#00B140",
+        imageUri: Uri? = null,
+        blurRadius: Int = 20,
+        proxyUri: Uri?
+    ) {
+        viewModelScope.launch {
+            _project.update { current ->
+                if (current == null) return@update null
+                val ops = current.operations.toMutableList()
+                val existingIdx = ops.indexOfFirst { it is EditOperation.RemoveBackgroundMain }
+                val newOp = EditOperation.RemoveBackgroundMain(
+                    type = type,
+                    colorHex = colorHex,
+                    imageUri = imageUri,
+                    blurRadius = blurRadius,
+                    proxyUri = proxyUri
+                )
+                if (existingIdx != -1) ops[existingIdx] = newOp else ops.add(newOp)
+
+                _undoStack.value = _undoStack.value + current
+                _redoStack.value = emptyList()
+                current.copy(operations = ops)
+            }
+            updateUiState { state ->
+                state.copy(
+                    pendingOperationCount = _project.value?.getOperationCount() ?: 0,
+                    canUndo = _undoStack.value.isNotEmpty(),
+                    canRedo = false
+                )
+            }
+        }
+    }
+
+    /** Removes the background-removal operation entirely, restoring the real background. */
+    fun clearMainVideoBackgroundRemoval() {
+        viewModelScope.launch {
+            _project.update { current ->
+                if (current == null) return@update null
+                val ops = current.operations.filterNot { it is EditOperation.RemoveBackgroundMain }
+                _undoStack.value = _undoStack.value + current
+                _redoStack.value = emptyList()
+                current.copy(operations = ops)
+            }
+        }
+    }
+
     fun updateMainVideoMirror(isMirrored: Boolean) {
         viewModelScope.launch {
             _project.update { current ->
@@ -1015,6 +1070,7 @@ class VideoEditingViewModel : ViewModel() {
                             is EditOperation.MirrorMain -> op.id == operationId
                             is EditOperation.MaskMain -> op.id == operationId
                             is EditOperation.CanvasBackground -> op.id == operationId
+                            is EditOperation.RemoveBackgroundMain -> op.id == operationId
                         }
                     }
                     it.copy(operations = newOps)
@@ -1678,7 +1734,11 @@ class VideoEditingViewModel : ViewModel() {
         var outputDuration: Double? = null
         val reverseOp = operations.filterIsInstance<EditOperation.ReverseMain>().lastOrNull()
         val speedOp = operations.filterIsInstance<EditOperation.SpeedMain>().lastOrNull()
-        val finalProxyUri = reverseOp?.proxyUri ?: speedOp?.proxyUri
+        // Background removal runs first in the conceptual pipeline (it replaces the
+        // pixels), so its proxy takes priority as the effective source when ready —
+        // falling back to reverse/speed proxies exactly as before when it isn't set.
+        val bgRemovalOp = operations.filterIsInstance<EditOperation.RemoveBackgroundMain>().lastOrNull()
+        val finalProxyUri = bgRemovalOp?.proxyUri ?: reverseOp?.proxyUri ?: speedOp?.proxyUri
         
         if (finalProxyUri != null) {
             val proxyPath = resolveUriToPath(finalProxyUri) ?: finalProxyUri.toString()
