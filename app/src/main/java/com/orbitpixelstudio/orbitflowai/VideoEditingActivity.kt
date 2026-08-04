@@ -6708,7 +6708,7 @@ class VideoEditingActivity : AppCompatActivity() {
         val view = layoutInflater.inflate(R.layout.dialog_transitions, null)
         bottomSheet.setContentView(view)
 
-        val transitionsList = view.findViewById<LinearLayout>(R.id.transitionsList)
+        val transitionsList = view.findViewById<LinearLayout>(R.id.transitionsSectionsContainer)
         val project = viewModel.project.value ?: return
         val existingOp = project.operations.filterIsInstance<com.orbitpixelstudio.orbitflowai.models.EditOperation.Transition>().find { it.index == transitionIndex }
         var activeTransitionType = existingOp?.type ?: "none"
@@ -6749,78 +6749,120 @@ class VideoEditingActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {}
         })
 
-        val transitions = listOf(
-            Pair("none", "None"),
-            Pair("fade", "Fade"),
-            Pair("fadeblack", "Fade Black"),
-            Pair("fadewhite", "Fade White"),
-            Pair("dissolve", "Dissolve"),
-            Pair("wipeleft", "Wipe L"),
-            Pair("wiperight", "Wipe R"),
-            Pair("wipeup", "Wipe Up"),
-            Pair("wipedown", "Wipe Down"),
-            Pair("slideleft", "Slide L"),
-            Pair("slideright", "Slide R"),
-            Pair("slideup", "Slide Up"),
-            Pair("slidedown", "Slide Down"),
-            Pair("coverleft", "Cover L"),
-            Pair("coverright", "Cover R"),
-            Pair("coverup", "Cover Up"),
-            Pair("coverdown", "Cover Down"),
-            Pair("revealleft", "Reveal L"),
-            Pair("revealright", "Reveal R"),
-            Pair("revealup", "Reveal Up"),
-            Pair("revealdown", "Reveal Down"),
-            Pair("circlecrop", "Circle"),
-            Pair("circleopen", "Circle Open"),
-            Pair("circleclose", "Circle Close"),
-            Pair("rectcrop", "Box"),
-            Pair("horzopen", "Horz Open"),
-            Pair("horzclose", "Horz Close"),
-            Pair("vertopen", "Vert Open"),
-            Pair("vertclose", "Vert Close"),
-            Pair("diagtl", "Diagonal TL"),
-            Pair("diagtr", "Diagonal TR"),
-            Pair("diagbl", "Diagonal BL"),
-            Pair("diagbr", "Diagonal BR"),
-            Pair("zoomin", "Zoom In"),
-            Pair("squeezeh", "Stretch H"),
-            Pair("squeezev", "Stretch V"),
-            Pair("hblur", "Blur"),
-            Pair("pixelize", "Pixelize"),
-            Pair("hlslice", "H-Slice"),
-            Pair("hrslice", "H-Slice R"),
-            Pair("vuslice", "V-Slice"),
-            Pair("vdslice", "V-Slice D")
+        // Grouped into categories that mirror how professional editors organize
+        // transitions, instead of one flat 40-item row. "none" is handled
+        // separately, pinned before every category.
+        val transitionCategories = listOf(
+            "Basic" to listOf(
+                Pair("fade", "Fade"),
+                Pair("fadeblack", "Fade Black"),
+                Pair("fadewhite", "Fade White"),
+                Pair("dissolve", "Dissolve"),
+                Pair("zoomin", "Zoom In")
+            ),
+            "Wipe" to listOf(
+                Pair("wipeleft", "Wipe L"),
+                Pair("wiperight", "Wipe R"),
+                Pair("wipeup", "Wipe Up"),
+                Pair("wipedown", "Wipe Down")
+            ),
+            "Slide & Push" to listOf(
+                Pair("slideleft", "Slide L"),
+                Pair("slideright", "Slide R"),
+                Pair("slideup", "Slide Up"),
+                Pair("slidedown", "Slide Down"),
+                Pair("coverleft", "Cover L"),
+                Pair("coverright", "Cover R"),
+                Pair("coverup", "Cover Up"),
+                Pair("coverdown", "Cover Down"),
+                Pair("revealleft", "Reveal L"),
+                Pair("revealright", "Reveal R"),
+                Pair("revealup", "Reveal Up"),
+                Pair("revealdown", "Reveal Down")
+            ),
+            "Shape" to listOf(
+                Pair("circlecrop", "Circle"),
+                Pair("circleopen", "Circle Open"),
+                Pair("circleclose", "Circle Close"),
+                Pair("rectcrop", "Box"),
+                Pair("horzopen", "Horz Open"),
+                Pair("horzclose", "Horz Close"),
+                Pair("vertopen", "Vert Open"),
+                Pair("vertclose", "Vert Close"),
+                Pair("diagtl", "Diagonal TL"),
+                Pair("diagtr", "Diagonal TR"),
+                Pair("diagbl", "Diagonal BL"),
+                Pair("diagbr", "Diagonal BR")
+            ),
+            "Slice" to listOf(
+                Pair("hlslice", "H-Slice"),
+                Pair("hrslice", "H-Slice R"),
+                Pair("vuslice", "V-Slice"),
+                Pair("vdslice", "V-Slice D")
+            ),
+            "Distort" to listOf(
+                Pair("squeezeh", "Stretch H"),
+                Pair("squeezev", "Stretch V"),
+                Pair("hblur", "Blur"),
+                Pair("pixelize", "Pixelize")
+            )
         )
+        val allTransitionsFlat = transitionCategories.flatMap { it.second }
 
-        val itemBgs = mutableMapOf<String, FrameLayout>()
-        val itemTvShorts = mutableMapOf<String, TextView>()
+        val favPrefs = getSharedPreferences("orbitflowai_prefs", Context.MODE_PRIVATE)
+        val favKey = "fav_transitions"
+        fun getFavorites(): MutableSet<String> = favPrefs.getStringSet(favKey, emptySet())!!.toMutableSet()
+        fun saveFavorites(favs: Set<String>) = favPrefs.edit().putStringSet(favKey, favs).apply()
+
+        val itemBgs = mutableMapOf<String, MutableList<FrameLayout>>()
+        val itemTvShorts = mutableMapOf<String, MutableList<TextView>>()
+        val itemStars = mutableMapOf<String, MutableList<ImageView>>()
 
         fun refreshSelectionStates() {
-            for ((typeKey, bgFrame) in itemBgs) {
-                val tvShort = itemTvShorts[typeKey]
+            for ((typeKey, bgFrames) in itemBgs) {
+                val tvShorts = itemTvShorts[typeKey]
                 val isSelected = (typeKey == activeTransitionType)
-                if (isSelected) {
-                    bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_selected)
-                    bgFrame.foreground = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_transition_border_selected)
-                    tvShort?.setTextColor(android.graphics.Color.WHITE)
-                } else {
-                    bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_item)
-                    bgFrame.foreground = null
-                    tvShort?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.textColor))
+                bgFrames.forEachIndexed { i, bgFrame ->
+                    if (isSelected) {
+                        bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_selected)
+                        bgFrame.foreground = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_transition_border_selected)
+                        tvShorts?.getOrNull(i)?.setTextColor(android.graphics.Color.WHITE)
+                    } else {
+                        bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_item)
+                        bgFrame.foreground = null
+                        tvShorts?.getOrNull(i)?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.textColor))
+                    }
                 }
             }
         }
 
-        for ((type, name) in transitions) {
-            val itemView = layoutInflater.inflate(R.layout.item_transition_option, transitionsList, false)
+        fun refreshFavoriteStars() {
+            val favs = getFavorites()
+            for ((typeKey, stars) in itemStars) {
+                val isFav = favs.contains(typeKey)
+                stars.forEach { star ->
+                    star.alpha = if (isFav) 1f else 0.4f
+                    androidx.core.widget.ImageViewCompat.setImageTintList(
+                        star,
+                        android.content.res.ColorStateList.valueOf(
+                            if (isFav) android.graphics.Color.parseColor("#FFD54F")
+                            else androidx.core.content.ContextCompat.getColor(this, R.color.textColor)
+                        )
+                    )
+                }
+            }
+        }
+
+        fun buildTransitionItem(container: LinearLayout, type: String, name: String) {
+            val itemView = layoutInflater.inflate(R.layout.item_transition_option, container, false)
             val tvName = itemView.findViewById<TextView>(R.id.transitionName)
             val tvShort = itemView.findViewById<TextView>(R.id.transitionShortName)
             val bg = itemView.findViewById<FrameLayout>(R.id.transitionIconBg)
+            val star = itemView.findViewById<ImageView>(R.id.transitionFavStar)
 
-            itemBgs[type] = bg
-            itemTvShorts[type] = tvShort
+            itemBgs.getOrPut(type) { mutableListOf() }.add(bg)
+            itemTvShorts.getOrPut(type) { mutableListOf() }.add(tvShort)
+            itemStars.getOrPut(type) { mutableListOf() }.add(star)
 
             tvName.text = name
             bg.clipToOutline = true
@@ -6829,48 +6871,45 @@ class VideoEditingActivity : AppCompatActivity() {
             val startDrawable = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.trans_frame_start)
             val endDrawable = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.trans_frame_end)
 
-            if (startDrawable != null && endDrawable != null) {
-                if (type == "none") {
+            if (type == "none") {
+                star.visibility = View.GONE
+                if (startDrawable != null && endDrawable != null) {
                     ivPreview.setImageDrawable(androidx.core.content.ContextCompat.getDrawable(this, R.drawable.ic_close_24))
                     ivPreview.visibility = View.VISIBLE
                     tvShort.visibility = View.GONE
                 } else {
-                    val animation = android.graphics.drawable.AnimationDrawable().apply {
-                        isOneShot = false
-                    }
-                    val frame1Res = resources.getIdentifier("trans_preview_${type}_1", "drawable", packageName)
-                    val frame2Res = resources.getIdentifier("trans_preview_${type}_2", "drawable", packageName)
-                    val frame3Res = resources.getIdentifier("trans_preview_${type}_3", "drawable", packageName)
+                    tvShort.visibility = View.VISIBLE
+                    tvShort.text = "—"
+                }
+            } else if (startDrawable != null && endDrawable != null) {
+                val animation = android.graphics.drawable.AnimationDrawable().apply { isOneShot = false }
+                val frame1Res = resources.getIdentifier("trans_preview_${type}_1", "drawable", packageName)
+                val frame2Res = resources.getIdentifier("trans_preview_${type}_2", "drawable", packageName)
+                val frame3Res = resources.getIdentifier("trans_preview_${type}_3", "drawable", packageName)
 
-                    if (frame1Res != 0 && frame2Res != 0 && frame3Res != 0) {
-                        val f1 = androidx.core.content.ContextCompat.getDrawable(this, frame1Res)
-                        val f2 = androidx.core.content.ContextCompat.getDrawable(this, frame2Res)
-                        val f3 = androidx.core.content.ContextCompat.getDrawable(this, frame3Res)
-
-                        if (f1 != null && f2 != null && f3 != null) {
-                            animation.addFrame(startDrawable, 600)
-                            animation.addFrame(f1, 100)
-                            animation.addFrame(f2, 100)
-                            animation.addFrame(f3, 100)
-                            animation.addFrame(endDrawable, 600)
-
-                            ivPreview.setImageDrawable(animation)
-                            ivPreview.visibility = View.VISIBLE
-                            tvShort.visibility = View.GONE
-                            ivPreview.post { animation.start() }
-                        } else {
-                            ivPreview.visibility = View.GONE
-                            tvShort.visibility = View.VISIBLE
-                            tvShort.text = name.substring(0, minOf(2, name.length)).uppercase()
-                        }
+                if (frame1Res != 0 && frame2Res != 0 && frame3Res != 0) {
+                    val f1 = androidx.core.content.ContextCompat.getDrawable(this, frame1Res)
+                    val f2 = androidx.core.content.ContextCompat.getDrawable(this, frame2Res)
+                    val f3 = androidx.core.content.ContextCompat.getDrawable(this, frame3Res)
+                    if (f1 != null && f2 != null && f3 != null) {
+                        animation.addFrame(startDrawable, 600)
+                        animation.addFrame(f1, 100)
+                        animation.addFrame(f2, 100)
+                        animation.addFrame(f3, 100)
+                        animation.addFrame(endDrawable, 600)
+                        ivPreview.setImageDrawable(animation)
+                        ivPreview.visibility = View.VISIBLE
+                        tvShort.visibility = View.GONE
+                        ivPreview.post { animation.start() }
                     } else {
-                        ivPreview.visibility = View.GONE
                         tvShort.visibility = View.VISIBLE
                         tvShort.text = name.substring(0, minOf(2, name.length)).uppercase()
                     }
+                } else {
+                    tvShort.visibility = View.VISIBLE
+                    tvShort.text = name.substring(0, minOf(2, name.length)).uppercase()
                 }
             } else {
-                ivPreview.visibility = View.GONE
                 tvShort.visibility = View.VISIBLE
                 tvShort.text = name.substring(0, minOf(2, name.length)).uppercase()
             }
@@ -6880,11 +6919,69 @@ class VideoEditingActivity : AppCompatActivity() {
                 refreshSelectionStates()
                 applyTransitionToIndex(transitionIndex, type, activeDurationMs)
             }
+            if (type != "none") {
+                star.setOnClickListener {
+                    val favs = getFavorites()
+                    if (favs.contains(type)) favs.remove(type) else favs.add(type)
+                    saveFavorites(favs)
+                    refreshFavoriteStars()
+                }
+            }
 
-            transitionsList.addView(itemView)
+            container.addView(itemView)
         }
 
-        refreshSelectionStates()
+        fun addCategoryHeader(label: String) {
+            val header = TextView(this).apply {
+                text = label
+                setTextColor(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.textColor))
+                alpha = 0.7f
+                textSize = 12f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                val density = resources.displayMetrics.density
+                setPadding(0, (10 * density).toInt(), 0, (6 * density).toInt())
+            }
+            transitionsList.addView(header)
+        }
+
+        fun addCategoryRow(items: List<Pair<String, String>>) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            val scroll = android.widget.HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                addView(row)
+            }
+            items.forEach { (type, name) -> buildTransitionItem(row, type, name) }
+            transitionsList.addView(scroll)
+        }
+
+        fun rebuildTransitionSections() {
+            transitionsList.removeAllViews()
+            itemBgs.clear(); itemTvShorts.clear(); itemStars.clear()
+
+            addCategoryRow(listOf(Pair("none", "None")))
+
+            val favs = getFavorites()
+            val favItems = allTransitionsFlat.filter { favs.contains(it.first) }
+            if (favItems.isNotEmpty()) {
+                addCategoryHeader("★ Favorites")
+                addCategoryRow(favItems)
+            }
+
+            transitionCategories.forEach { (label, items) ->
+                addCategoryHeader(label)
+                addCategoryRow(items)
+            }
+
+            refreshSelectionStates()
+            refreshFavoriteStars()
+        }
+
+        rebuildTransitionSections()
 
         view.findViewById<View>(R.id.btnApplyToAll)?.setOnClickListener {
             val transitionsCount = chunkDurationsMs.size - 1
