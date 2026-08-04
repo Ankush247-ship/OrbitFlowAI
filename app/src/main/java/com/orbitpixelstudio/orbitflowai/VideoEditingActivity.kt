@@ -6805,6 +6805,14 @@ class VideoEditingActivity : AppCompatActivity() {
                 Pair("squeezev", "Stretch V"),
                 Pair("hblur", "Blur"),
                 Pair("pixelize", "Pixelize")
+            ),
+            "Effects" to listOf(
+                Pair("rgbsplit", "RGB Split"),
+                Pair("glitch", "Glitch"),
+                Pair("camerashake", "Cam Shake"),
+                Pair("whip", "Whip"),
+                Pair("spin", "Spin"),
+                Pair("flip3d", "3D Flip")
             )
         )
         val allTransitionsFlat = transitionCategories.flatMap { it.second }

@@ -1142,6 +1142,88 @@ class VideoEditingViewModel : ViewModel() {
         return "drawtext=${fontPart}text='$escapedText':fontcolor='${formatColorForFFmpeg(op.color)}':fontsize=${op.fontSize}:$positionPart$enablePart$alphaPart$borderPart$alignPart$lineSpacingPart"
     }
 
+    // Transition types that are NOT native FFmpeg xfade "transition=" values.
+    // Each is implemented as a real per-pixel filter chain (tested against a
+    // live ffmpeg build), driven by an "env(t)" 0..1 envelope expression that
+    // the caller supplies (ramping the effect in toward the cut on the
+    // outgoing clip, and out from the cut on the incoming clip). The output
+    // of this chain is then handed to a plain xfade=fade for the actual cut.
+    private val customPixelTransitionTypes = setOf(
+        "rgbsplit", "glitch", "camerashake", "whip", "spin", "flip3d"
+    )
+
+    /**
+     * Builds one filter_complex line: inLabel -> outLabel, applying a
+     * time-gated pixel effect. `env` is an ffmpeg expression (uses `t`,
+     * seconds relative to this stream's own timeline) that evaluates to the
+     * effect's 0..1 strength at each frame — 0 outside the transition
+     * window, ramping to 1 at the cut point.
+     */
+    private fun buildCustomTransitionFxChain(
+        inLabel: String,
+        outLabel: String,
+        type: String,
+        env: String,
+        w: Int,
+        h: Int
+    ): String {
+        return when (type) {
+            // Chromatic aberration: split R/G/B, push R and B in opposite
+            // directions by up to `amp` px (scaled by env), recombine with
+            // screen blend. pad-then-crop keeps the frame size constant so
+            // it stays compatible with xfade.
+            "rgbsplit" -> {
+                val amp = 16
+                "${inLabel}split=3[${outLabel.trim('[',']')}_r][${outLabel.trim('[',']')}_g][${outLabel.trim('[',']')}_b];" +
+                "[${outLabel.trim('[',']')}_r]lutrgb=g=0:b=0,pad=$w+${2*amp}:$h:$amp:0,crop=$w:$h:x='$amp+$amp*($env)':y=0[${outLabel.trim('[',']')}_r1];" +
+                "[${outLabel.trim('[',']')}_g]lutrgb=r=0:b=0,pad=$w+${2*amp}:$h:$amp:0,crop=$w:$h:x=$amp:y=0[${outLabel.trim('[',']')}_g1];" +
+                "[${outLabel.trim('[',']')}_b]lutrgb=r=0:g=0,pad=$w+${2*amp}:$h:$amp:0,crop=$w:$h:x='$amp-$amp*($env)':y=0[${outLabel.trim('[',']')}_b1];" +
+                "[${outLabel.trim('[',']')}_r1][${outLabel.trim('[',']')}_g1]blend=all_mode=screen[${outLabel.trim('[',']')}_rg];" +
+                "[${outLabel.trim('[',']')}_rg][${outLabel.trim('[',']')}_b1]blend=all_mode=screen$outLabel"
+            }
+            // Digital glitch: faster/higher-frequency RGB jitter than
+            // rgbsplit, plus a contrast pulse for a "signal break" look.
+            "glitch" -> {
+                val amp = 22
+                val base = outLabel.trim('[', ']')
+                "${inLabel}split=3[${base}_r][${base}_g][${base}_b];" +
+                "[${base}_r]lutrgb=g=0:b=0,pad=$w+${2*amp}:$h:$amp:0,crop=$w:$h:x='$amp+$amp*($env)*sin(90*t)':y=0[${base}_r1];" +
+                "[${base}_g]lutrgb=r=0:b=0,pad=$w+${2*amp}:$h:$amp:0,crop=$w:$h:x=$amp:y=0[${base}_g1];" +
+                "[${base}_b]lutrgb=r=0:g=0,pad=$w+${2*amp}:$h:$amp:0,crop=$w:$h:x='$amp-$amp*($env)*sin(70*t+1)':y=0[${base}_b1];" +
+                "[${base}_r1][${base}_g1]blend=all_mode=screen[${base}_rg];" +
+                "[${base}_rg][${base}_b1]blend=all_mode=screen,eq=contrast='1+1.5*($env)*abs(sin(45*t))'$outLabel"
+            }
+            // Camera shake: whole-frame jitter on both axes at different
+            // frequencies, amplitude scaled by env. pad+crop keeps size fixed.
+            "camerashake" -> {
+                val amp = 14
+                "${inLabel}pad=$w+${2*amp}:$h+${2*amp}:$amp:$amp," +
+                "crop=$w:$h:x='$amp+$amp*($env)*sin(40*t)':y='$amp+$amp*($env)*cos(53*t)'$outLabel"
+            }
+            // Whip pan: fast horizontal slide of up to a third of the frame
+            // width, scaled by env, giving a whip-pan feel on the cut.
+            "whip" -> {
+                val amp = (w / 3)
+                "${inLabel}pad=$w+${2*amp}:$h:$amp:0," +
+                "crop=$w:$h:x='$amp+$amp*($env)':y=0[${outLabel.trim('[',']')}_p];" +
+                "[${outLabel.trim('[',']')}_p]gblur=sigma=${amp/10}:steps=1$outLabel"
+            }
+            // Spin: rotate + scale down toward the cut, like a spin-cut.
+            "spin" -> {
+                "${inLabel}rotate=a='($env)*0.9':fillcolor=black@0:ow=$w:oh=$h," +
+                "scale=w='$w*(1-0.25*($env))':h='$h*(1-0.25*($env))':eval=frame," +
+                "pad=$w:$h:(ow-iw)/2:(oh-ih)/2:black@0$outLabel"
+            }
+            // Pseudo-3D flip: squeeze horizontally toward zero at the cut
+            // (edge-on card-flip look), re-centered on the fixed canvas.
+            "flip3d" -> {
+                "${inLabel}scale=w='max(2,$w*(1-0.96*($env)))':h=$h:eval=frame," +
+                "pad=$w:$h:(ow-iw)/2:0:black@0$outLabel"
+            }
+            else -> "${inLabel}null$outLabel"
+        }
+    }
+
     private fun buildFFmpegMaskAlphaExpr(
         mc: EditOperation.MaskConfig,
         cx: String,
@@ -1939,14 +2021,34 @@ class VideoEditingViewModel : ViewModel() {
                         "revealup", "revealdown"
                     )
                     val rawType = transOp.type.lowercase()
+
+                    // Custom pixel-effect transitions (not native xfade "transition=" types).
+                    // These are built as a pre-processing filter applied to each side of the
+                    // cut — the outgoing clip gets the effect ramping IN toward the cut point
+                    // (using its own timeline + the computed offset/duration), the incoming
+                    // clip gets it ramping OUT from t=0 — then the two pre-processed streams
+                    // are fed into a plain xfade=fade so the existing offset/trim/concat
+                    // machinery (which the rest of this function relies on) doesn't change.
+                    var effectiveBaseV = baseStream.vLabel
+                    var effectiveNextV = nextVLabel
+                    val customLabelBase = "cfxA${transitionLabelCounter}"
+                    val customLabelNext = "cfxB${transitionLabelCounter}"
+                    if (customPixelTransitionTypes.contains(rawType)) {
+                        val envBase = "if(between(t,${offset},${offset + transDuration}),(t-${offset})/${transDuration},0)"
+                        val envNext = "if(between(t,0,${transDuration}),1-(t/${transDuration}),0)"
+                        filterParts.add(buildCustomTransitionFxChain(baseStream.vLabel, "[$customLabelBase]", rawType, envBase, mainWidth, mainHeight))
+                        filterParts.add(buildCustomTransitionFxChain(nextVLabel, "[$customLabelNext]", rawType, envNext, mainWidth, mainHeight))
+                        effectiveBaseV = "[$customLabelBase]"
+                        effectiveNextV = "[$customLabelNext]"
+                    }
                     val sanitizedTransType = when (rawType) {
                         "smoothleft" -> "coverleft"
                         "smoothright" -> "coverright"
                         "distance" -> "zoomin"
-                        else -> if (validXfadeTransitions.contains(rawType)) rawType else "fade"
+                        else -> if (customPixelTransitionTypes.contains(rawType)) "fade" else if (validXfadeTransitions.contains(rawType)) rawType else "fade"
                     }
 
-                    filterParts.add("${baseStream.vLabel}${nextVLabel}xfade=transition=${sanitizedTransType}:duration=${transDuration}:offset=${offset}${xfvOut}")
+                    filterParts.add("${effectiveBaseV}${effectiveNextV}xfade=transition=${sanitizedTransType}:duration=${transDuration}:offset=${offset}${xfvOut}")
                     filterParts.add("${baseStream.aLabel}${nextALabel}acrossfade=d=${transDuration}:c1=tri:c2=tri${xfaOut}")
 
                     val newDuration = offset + durationsArray[gapIdx + 1]
