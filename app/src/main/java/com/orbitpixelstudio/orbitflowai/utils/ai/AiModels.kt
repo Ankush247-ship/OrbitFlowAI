@@ -7,7 +7,25 @@ package com.orbitpixelstudio.orbitflowai.utils.ai
  */
 sealed class AiResult {
     data class Success(val text: String) : AiResult()
-    data class Failure(val message: String) : AiResult()
+    data class Failure(
+        val message: String,
+        val type: AiErrorType = AiErrorType.UNKNOWN
+    ) : AiResult()
+}
+
+/**
+ * Classifies *why* an AI call failed so the UI can show a specific, actionable
+ * message (e.g. "Invalid API key" vs "No internet") instead of one generic
+ * "couldn't respond" string regardless of cause.
+ */
+enum class AiErrorType {
+    MISSING_API_KEY,
+    INVALID_API_KEY,
+    NO_INTERNET,
+    RATE_LIMITED,
+    PROVIDER_UNAVAILABLE,
+    TIMEOUT,
+    UNKNOWN
 }
 
 /**
