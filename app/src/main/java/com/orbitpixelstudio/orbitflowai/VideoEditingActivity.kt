@@ -1804,6 +1804,10 @@ class VideoEditingActivity : AppCompatActivity() {
             showOrbitAiAssistantDialog()
         }
 
+        findViewById<ImageButton>(R.id.btnAiWrite)?.setBounceClickListener {
+            showAiWriteDialog()
+        }
+
         try {
             btnUndo = findViewById(R.id.btnUndo)
             btnRedo = findViewById(R.id.btnRedo)
@@ -2780,6 +2784,19 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
+    /** Maps a structured AI failure reason to a specific, actionable string resource. */
+    private fun aiErrorMessageRes(type: com.orbitpixelstudio.orbitflowai.utils.ai.AiErrorType): Int {
+        return when (type) {
+            com.orbitpixelstudio.orbitflowai.utils.ai.AiErrorType.MISSING_API_KEY -> R.string.str_ai_error_missing_key
+            com.orbitpixelstudio.orbitflowai.utils.ai.AiErrorType.INVALID_API_KEY -> R.string.str_ai_error_invalid_key
+            com.orbitpixelstudio.orbitflowai.utils.ai.AiErrorType.NO_INTERNET -> R.string.str_ai_error_no_internet
+            com.orbitpixelstudio.orbitflowai.utils.ai.AiErrorType.RATE_LIMITED -> R.string.str_ai_error_rate_limited
+            com.orbitpixelstudio.orbitflowai.utils.ai.AiErrorType.PROVIDER_UNAVAILABLE -> R.string.str_ai_error_provider_unavailable
+            com.orbitpixelstudio.orbitflowai.utils.ai.AiErrorType.TIMEOUT -> R.string.str_ai_error_timeout
+            com.orbitpixelstudio.orbitflowai.utils.ai.AiErrorType.UNKNOWN -> R.string.str_ai_error_unknown
+        }
+    }
+
     private fun showAiCaptionGeneratorDialog() {
         if (!com.orbitpixelstudio.orbitflowai.utils.ai.AiTextGenerator.isConfigured(this)) {
             Toast.makeText(this, R.string.str_no_api_key_set, Toast.LENGTH_LONG).show()
@@ -2888,7 +2905,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 is com.orbitpixelstudio.orbitflowai.utils.ai.AiResult.Failure -> {
                     hideLoading()
                     Log.e(TAG, "AI caption generation failed: ${result.message}")
-                    Toast.makeText(this@VideoEditingActivity, R.string.str_ai_caption_failed, Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@VideoEditingActivity, getString(aiErrorMessageRes(result.type)), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -2906,10 +2923,26 @@ class VideoEditingActivity : AppCompatActivity() {
             return
         }
 
+        // In-session Q&A memory: each new question is answered with the prior
+        // turns as context, so follow-up questions ("what about a shorter one?")
+        // work without needing a database-backed chat history.
+        data class Turn(val question: String, val answer: String)
+        val sessionHistory = mutableListOf<Turn>()
+        var lastAnswer = ""
+        var lastQuestion = ""
+
+        val density = resources.displayMetrics.density
         val container = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            val pad = (20 * resources.displayMetrics.density).toInt()
+            val pad = (20 * density).toInt()
             setPadding(pad, pad, pad, pad)
+        }
+        val historyView = TextView(this).apply {
+            visibility = View.GONE
+            setTextColor(ContextCompat.getColor(this@VideoEditingActivity, R.color.textColor))
+            textSize = 13f
+            setLineSpacing(4f, 1.1f)
+            alpha = 0.65f
         }
         val questionInput = android.widget.EditText(this).apply {
             hint = getString(R.string.str_orbit_ai_hint)
@@ -2921,13 +2954,37 @@ class VideoEditingActivity : AppCompatActivity() {
         }
         val answerView = TextView(this).apply {
             visibility = View.GONE
-            setPadding(0, (16 * resources.displayMetrics.density).toInt(), 0, 0)
+            setPadding(0, (16 * density).toInt(), 0, 0)
             setTextColor(ContextCompat.getColor(this@VideoEditingActivity, R.color.textColor))
             textSize = 14f
             setLineSpacing(4f, 1.1f)
         }
+        val actionsRow = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            visibility = View.GONE
+            setPadding(0, (10 * density).toInt(), 0, 0)
+        }
+        val copyBtn = android.widget.TextView(this).apply {
+            text = getString(R.string.str_orbit_ai_copy)
+            setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
+            setTextColor(ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))
+            isClickable = true
+            isFocusable = true
+        }
+        val regenBtn = android.widget.TextView(this).apply {
+            text = getString(R.string.str_orbit_ai_regenerate)
+            setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
+            setTextColor(ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))
+            isClickable = true
+            isFocusable = true
+        }
+        actionsRow.addView(copyBtn)
+        actionsRow.addView(regenBtn)
+
+        container.addView(historyView)
         container.addView(questionInput)
         container.addView(answerView)
+        container.addView(actionsRow)
 
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(R.string.str_orbit_ai)
@@ -2937,44 +2994,225 @@ class VideoEditingActivity : AppCompatActivity() {
             .setNegativeButton(R.string.cancel, null)
             .create()
 
+        fun runQuestion(question: String) {
+            val opCount = viewModel.project.value?.getOperationCount() ?: 0
+            val durationMs = try {
+                viewModel.project.value?.getDurationAfterTrims()
+                    ?: (if (::player.isInitialized && player.duration > 0) player.duration else null)
+                    ?: 0L
+            } catch (e: Exception) { 0L }
+            val durationSeconds = if (durationMs > 0) durationMs / 1000 else null
+
+            val contextLine = buildString {
+                append("The user is editing a video")
+                if (durationSeconds != null) append(" about ${durationSeconds}s long")
+                append(" with $opCount edit(s) applied so far.")
+            }
+            val historyBlock = if (sessionHistory.isEmpty()) "" else {
+                "Prior turns in this conversation:\n" + sessionHistory.takeLast(4).joinToString("\n") {
+                    "Q: ${it.question}\nA: ${it.answer}"
+                } + "\n\n"
+            }
+            val prompt = """
+                You are Orbit AI, the built-in editing assistant inside OrbitFlow AI, a mobile video editor.
+                $contextLine
+                $historyBlock
+                Answer the user's question in 2-4 short, practical sentences. No markdown, no headers.
+
+                User question: "$question"
+            """.trimIndent()
+
+            answerView.visibility = View.VISIBLE
+            actionsRow.visibility = View.GONE
+            answerView.text = getString(R.string.str_orbit_ai_thinking)
+            lifecycleScope.launch {
+                val result = com.orbitpixelstudio.orbitflowai.utils.ai.AiTextGenerator.generate(this@VideoEditingActivity, prompt)
+                when (result) {
+                    is com.orbitpixelstudio.orbitflowai.utils.ai.AiResult.Success -> {
+                        val answer = result.text.trim()
+                        answerView.text = answer
+                        actionsRow.visibility = View.VISIBLE
+                        lastAnswer = answer
+                        lastQuestion = question
+                        sessionHistory.add(Turn(question, answer))
+                        historyView.visibility = View.VISIBLE
+                        historyView.text = sessionHistory.dropLast(1).joinToString("\n\n") { "Q: ${it.question}\nA: ${it.answer}" }
+                        historyView.visibility = if (sessionHistory.size > 1) View.VISIBLE else View.GONE
+                    }
+                    is com.orbitpixelstudio.orbitflowai.utils.ai.AiResult.Failure -> {
+                        Log.e(TAG, "Orbit AI failed (${result.type}): ${result.message}")
+                        answerView.text = getString(aiErrorMessageRes(result.type))
+                        actionsRow.visibility = View.GONE
+                    }
+                }
+            }
+        }
+
+        copyBtn.setOnClickListener {
+            if (lastAnswer.isEmpty()) return@setOnClickListener
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Orbit AI answer", lastAnswer))
+            Toast.makeText(this, R.string.str_orbit_ai_copied, Toast.LENGTH_SHORT).show()
+        }
+        regenBtn.setOnClickListener {
+            if (lastQuestion.isEmpty()) return@setOnClickListener
+            // Regenerating replaces the last turn rather than duplicating it in history.
+            if (sessionHistory.isNotEmpty()) sessionHistory.removeAt(sessionHistory.size - 1)
+            runQuestion(lastQuestion)
+        }
+
         dialog.setOnShowListener {
             dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val question = questionInput.text?.toString()?.trim().orEmpty()
                 if (question.isEmpty()) return@setOnClickListener
+                questionInput.text?.clear()
+                runQuestion(question)
+            }
+        }
+        dialog.show()
+    }
 
-                val opCount = viewModel.project.value?.getOperationCount() ?: 0
-                val durationMs = try {
-                    viewModel.project.value?.getDurationAfterTrims()
-                        ?: (if (::player.isInitialized && player.duration > 0) player.duration else null)
-                        ?: 0L
-                } catch (e: Exception) { 0L }
-                val durationSeconds = if (durationMs > 0) durationMs / 1000 else null
+    /**
+     * "AI Write" tool: Script / Titles / Description / Hashtags generators.
+     * All four share one dialog with a type selector, so the layout/plumbing
+     * lives once; the actual prompt differs per [AiContentType] in
+     * [com.orbitpixelstudio.orbitflowai.utils.ai.AiContentGenerator].
+     */
+    private fun showAiWriteDialog() {
+        if (!com.orbitpixelstudio.orbitflowai.utils.ai.AiTextGenerator.isConfigured(this)) {
+            Toast.makeText(this, R.string.str_no_api_key_set, Toast.LENGTH_LONG).show()
+            return
+        }
 
-                val contextLine = buildString {
-                    append("The user is editing a video")
-                    if (durationSeconds != null) append(" about ${durationSeconds}s long")
-                    append(" with $opCount edit(s) applied so far.")
-                }
-                val prompt = """
-                    You are Orbit AI, the built-in editing assistant inside OrbitFlow AI, a mobile video editor.
-                    $contextLine
-                    Answer the user's question in 2-4 short, practical sentences. No markdown, no headers.
+        val types = com.orbitpixelstudio.orbitflowai.utils.ai.AiContentType.entries
+        var selectedType = types[0]
+        var lastTopic = ""
+        var lastResult = ""
 
-                    User question: "$question"
-                """.trimIndent()
+        val density = resources.displayMetrics.density
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val pad = (20 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
 
-                answerView.visibility = View.VISIBLE
-                answerView.text = getString(R.string.str_orbit_ai_thinking)
-                lifecycleScope.launch {
-                    val result = com.orbitpixelstudio.orbitflowai.utils.ai.AiTextGenerator.generate(this@VideoEditingActivity, prompt)
-                    answerView.text = when (result) {
-                        is com.orbitpixelstudio.orbitflowai.utils.ai.AiResult.Success -> result.text.trim()
-                        is com.orbitpixelstudio.orbitflowai.utils.ai.AiResult.Failure -> {
-                            Log.e(TAG, "Orbit AI failed: ${result.message}")
-                            getString(R.string.str_orbit_ai_failed)
-                        }
+        val typeChips = com.google.android.material.chip.ChipGroup(this).apply {
+            isSingleSelection = true
+            isSelectionRequired = true
+        }
+        types.forEach { type ->
+            val chip = com.google.android.material.chip.Chip(this).apply {
+                text = type.label
+                isCheckable = true
+                isChecked = type == selectedType
+                tag = type
+            }
+            typeChips.addView(chip)
+        }
+
+        val topicInput = android.widget.EditText(this).apply {
+            hint = types[0].hint
+            minLines = 2
+            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            setPadding(0, (12 * density).toInt(), 0, 0)
+        }
+
+        val resultView = TextView(this).apply {
+            visibility = View.GONE
+            setPadding(0, (16 * density).toInt(), 0, 0)
+            setTextColor(ContextCompat.getColor(this@VideoEditingActivity, R.color.textColor))
+            textSize = 14f
+            setLineSpacing(4f, 1.1f)
+            setTextIsSelectable(true)
+        }
+        val actionsRow = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            visibility = View.GONE
+            setPadding(0, (10 * density).toInt(), 0, 0)
+        }
+        val copyBtn = android.widget.TextView(this).apply {
+            text = getString(R.string.str_orbit_ai_copy)
+            setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
+            setTextColor(ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))
+            isClickable = true
+            isFocusable = true
+        }
+        val regenBtn = android.widget.TextView(this).apply {
+            text = getString(R.string.str_orbit_ai_regenerate)
+            setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
+            setTextColor(ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))
+            isClickable = true
+            isFocusable = true
+        }
+        actionsRow.addView(copyBtn)
+        actionsRow.addView(regenBtn)
+
+        container.addView(typeChips)
+        container.addView(topicInput)
+        container.addView(resultView)
+        container.addView(actionsRow)
+
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.str_ai_write)
+            .setMessage(R.string.str_ai_write_desc)
+            .setView(container)
+            .setPositiveButton(R.string.str_ai_write_generate, null)
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+
+        fun runGenerate(topic: String, forceRefresh: Boolean) {
+            resultView.visibility = View.VISIBLE
+            actionsRow.visibility = View.GONE
+            resultView.text = getString(R.string.str_ai_write_thinking)
+            lifecycleScope.launch {
+                val result = com.orbitpixelstudio.orbitflowai.utils.ai.AiContentGenerator.generate(
+                    this@VideoEditingActivity, selectedType, topic, forceRefresh
+                )
+                when (result) {
+                    is com.orbitpixelstudio.orbitflowai.utils.ai.AiResult.Success -> {
+                        lastResult = result.text.trim()
+                        lastTopic = topic
+                        resultView.text = lastResult
+                        actionsRow.visibility = View.VISIBLE
+                    }
+                    is com.orbitpixelstudio.orbitflowai.utils.ai.AiResult.Failure -> {
+                        Log.e(TAG, "AI Write (${selectedType.name}) failed: ${result.message}")
+                        resultView.text = getString(aiErrorMessageRes(result.type))
+                        actionsRow.visibility = View.GONE
                     }
                 }
+            }
+        }
+
+        typeChips.setOnCheckedStateChangeListener { group, checkedIds ->
+            val chip = checkedIds.firstOrNull()?.let { group.findViewById<com.google.android.material.chip.Chip>(it) }
+            val type = chip?.tag as? com.orbitpixelstudio.orbitflowai.utils.ai.AiContentType ?: return@setOnCheckedStateChangeListener
+            selectedType = type
+            topicInput.hint = type.hint
+            // Switching type invalidates the shown result since it belonged to the old type.
+            resultView.visibility = View.GONE
+            actionsRow.visibility = View.GONE
+        }
+
+        copyBtn.setOnClickListener {
+            if (lastResult.isEmpty()) return@setOnClickListener
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText(selectedType.label, lastResult))
+            Toast.makeText(this, R.string.str_ai_write_copied, Toast.LENGTH_SHORT).show()
+        }
+        regenBtn.setOnClickListener {
+            if (lastTopic.isEmpty()) return@setOnClickListener
+            runGenerate(lastTopic, forceRefresh = true)
+        }
+
+        dialog.setOnShowListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val topic = topicInput.text?.toString()?.trim().orEmpty()
+                if (topic.isEmpty()) return@setOnClickListener
+                runGenerate(topic, forceRefresh = false)
             }
         }
         dialog.show()
@@ -5130,6 +5368,36 @@ class VideoEditingActivity : AppCompatActivity() {
                 0f, 0f, 1.4f, 0f, -20f,
                 0f, 0f, 0f, 1f, 0f
             )
+            // Approximates the "hdr" export filter's contrast/saturation lift.
+            "hdr" -> floatArrayOf(
+                1.25f, 0f, 0f, 0f, -15f,
+                0f, 1.25f, 0f, 0f, -15f,
+                0f, 0f, 1.25f, 0f, -15f,
+                0f, 0f, 0f, 1f, 0f
+            )
+            // Approximates the "cinematic" teal-shadow/orange-highlight export grade.
+            "cinematic" -> floatArrayOf(
+                1.08f, 0f, 0.04f, 0f, -8f,
+                0f, 1.05f, 0f, 0f, 0f,
+                0.02f, 0f, 1.05f, 0f, 6f,
+                0f, 0f, 0f, 1f, 0f
+            )
+            // Approximates the "retro" export grade's warm, lower-contrast look.
+            "retro" -> floatArrayOf(
+                1.05f, 0.05f, 0f, 0f, 15f,
+                0f, 0.95f, 0f, 0f, 5f,
+                0f, 0f, 0.85f, 0f, -5f,
+                0f, 0f, 0f, 1f, 0f
+            )
+            // Approximates only the "vhs" export filter's color-tone shift — the film-grain
+            // noise component of the export filter is spatial, not a per-pixel color matrix,
+            // so it isn't visible in this live preview (it IS present in the exported video).
+            "vhs" -> floatArrayOf(
+                0.9f, 0f, 0f, 0f, 0f,
+                0f, 0.85f, 0f, 0f, 0f,
+                0f, 0f, 0.85f, 0f, 10f,
+                0f, 0f, 0f, 1f, 0f
+            )
             else -> null
         }
 
@@ -6341,13 +6609,22 @@ class VideoEditingActivity : AppCompatActivity() {
         val filters = listOf(
             Pair("none", "None"),
             Pair("vintage", "Vintage"),
+            Pair("retro", "Retro"),
+            Pair("vhs", "VHS"),
+            Pair("hdr", "HDR"),
+            Pair("cinematic", "Cinematic"),
             Pair("warm", "Warm"),
             Pair("cool", "Cool"),
             Pair("contrast", "Contrast"),
             Pair("monochrome", "B&W"),
             Pair("vignette", "Vignette"),
             Pair("negative", "Negative"),
-            Pair("crossprocess", "Cross P")
+            Pair("crossprocess", "Cross P"),
+            Pair("rgbsplit", "RGB Split"),
+            Pair("blur", "Blur"),
+            Pair("motionblur", "Motion Blur"),
+            Pair("denoise", "Denoise"),
+            Pair("sharpen", "Sharpen")
         )
 
         val itemBgs = mutableMapOf<String, FrameLayout>()
@@ -6488,12 +6765,33 @@ class VideoEditingActivity : AppCompatActivity() {
             Pair("slidedown", "Slide Down"),
             Pair("coverleft", "Cover L"),
             Pair("coverright", "Cover R"),
+            Pair("coverup", "Cover Up"),
+            Pair("coverdown", "Cover Down"),
+            Pair("revealleft", "Reveal L"),
+            Pair("revealright", "Reveal R"),
+            Pair("revealup", "Reveal Up"),
+            Pair("revealdown", "Reveal Down"),
             Pair("circlecrop", "Circle"),
+            Pair("circleopen", "Circle Open"),
+            Pair("circleclose", "Circle Close"),
             Pair("rectcrop", "Box"),
+            Pair("horzopen", "Horz Open"),
+            Pair("horzclose", "Horz Close"),
+            Pair("vertopen", "Vert Open"),
+            Pair("vertclose", "Vert Close"),
+            Pair("diagtl", "Diagonal TL"),
+            Pair("diagtr", "Diagonal TR"),
+            Pair("diagbl", "Diagonal BL"),
+            Pair("diagbr", "Diagonal BR"),
             Pair("zoomin", "Zoom In"),
+            Pair("squeezeh", "Stretch H"),
+            Pair("squeezev", "Stretch V"),
+            Pair("hblur", "Blur"),
             Pair("pixelize", "Pixelize"),
             Pair("hlslice", "H-Slice"),
-            Pair("vuslice", "V-Slice")
+            Pair("hrslice", "H-Slice R"),
+            Pair("vuslice", "V-Slice"),
+            Pair("vdslice", "V-Slice D")
         )
 
         val itemBgs = mutableMapOf<String, FrameLayout>()

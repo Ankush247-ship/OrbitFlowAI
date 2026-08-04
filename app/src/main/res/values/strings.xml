@@ -204,4 +204,21 @@
     <string name="str_ask">Ask</string>
     <string name="str_orbit_ai_thinking">Orbit AI is thinking\u2026</string>
     <string name="str_orbit_ai_failed">Orbit AI couldn\'t respond. Check your API key and connection.</string>
+    <string name="str_ai_error_missing_key">No API key set. Add one in Settings \u2192 AI Studio.</string>
+    <string name="str_ai_error_invalid_key">Invalid API key. Check the key you entered in Settings \u2192 AI Studio.</string>
+    <string name="str_ai_error_no_internet">No internet connection. Check your network and try again.</string>
+    <string name="str_ai_error_rate_limited">You\'ve hit the provider\'s rate limit. Wait a moment and try again.</string>
+    <string name="str_ai_error_provider_unavailable">The AI provider is temporarily unavailable. Try again shortly.</string>
+    <string name="str_ai_error_timeout">The request timed out. Check your connection and try again.</string>
+    <string name="str_ai_error_unknown">Something went wrong talking to Orbit AI. Try again.</string>
+    <string name="str_orbit_ai_copy">Copy</string>
+    <string name="str_orbit_ai_regenerate">Regenerate</string>
+    <string name="str_orbit_ai_copied">Copied to clipboard</string>
+
+    <string name="str_ai_write">AI Write</string>
+    <string name="str_ai_write_desc">Describe your video and Orbit AI will draft it. Review before posting \u2014 this is a writing aid, not a fact-checker.</string>
+    <string name="str_ai_write_hint">Describe your video\u2026</string>
+    <string name="str_ai_write_generate">Generate</string>
+    <string name="str_ai_write_thinking">Writing\u2026</string>
+    <string name="str_ai_write_copied">Copied to clipboard</string>
 </resources>

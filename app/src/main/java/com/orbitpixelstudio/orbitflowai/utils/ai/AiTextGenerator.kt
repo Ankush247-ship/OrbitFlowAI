@@ -38,11 +38,50 @@ object AiTextGenerator {
     suspend fun generate(context: Context, prompt: String): AiResult {
         val provider = activeProvider(context)
         val apiKey = activeApiKey(context)
-            ?: return AiResult.Failure("No API key set for ${provider.displayName}")
+            ?: return AiResult.Failure(
+                "No API key set for ${provider.displayName}",
+                AiErrorType.MISSING_API_KEY
+            )
+
+        if (!com.orbitpixelstudio.orbitflowai.utils.NetworkUtils.isOnline(context)) {
+            return AiResult.Failure(
+                "No internet connection",
+                AiErrorType.NO_INTERNET
+            )
+        }
 
         return when (provider) {
             AiProviderId.GEMINI -> GeminiClient.generateText(apiKey, prompt)
             AiProviderId.OPENAI -> OpenAiClient.generateText(apiKey, prompt)
         }
+    }
+
+    /**
+     * Same as [generate], but checks/populates [AiResponseCache] first so
+     * one-shot generators (script/title/description/hashtags/captions) don't
+     * re-spend API quota re-generating an identical prompt within the cache
+     * TTL. Pass [forceRefresh] = true for an explicit "Regenerate" action to
+     * bypass the cache for that one call.
+     */
+    suspend fun generateCached(
+        context: Context,
+        prompt: String,
+        forceRefresh: Boolean = false
+    ): AiResult {
+        val provider = activeProvider(context)
+        val model = provider.defaultModel
+        val cacheKey = AiResponseCache.key(provider, model, prompt)
+
+        if (!forceRefresh) {
+            AiResponseCache.get(context, cacheKey)?.let { cached ->
+                return AiResult.Success(cached)
+            }
+        }
+
+        val result = generate(context, prompt)
+        if (result is AiResult.Success) {
+            AiResponseCache.put(context, cacheKey, result.text)
+        }
+        return result
     }
 }
