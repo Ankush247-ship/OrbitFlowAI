@@ -293,8 +293,14 @@ sealed class EditOperation : Serializable {
     data class ColorFilter(
         val index: Int,
         val filterName: String,
+        /** Filter strength from 0.0 (no effect) to 1.0 (full preset strength). */
+        val intensity: Float = 1f,
         val id: String = System.nanoTime().toString()
-    ) : EditOperation()
+    ) : EditOperation() {
+        init {
+            require(intensity in 0f..1f) { "Filter intensity must be between 0.0 and 1.0" }
+        }
+    }
 
     
     /**
