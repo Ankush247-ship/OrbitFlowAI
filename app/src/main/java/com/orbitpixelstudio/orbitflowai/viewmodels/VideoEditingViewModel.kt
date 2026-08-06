@@ -731,7 +731,7 @@ class VideoEditingViewModel : ViewModel() {
         }
     }
 
-    fun setColorFilter(index: Int, filterName: String) {
+    fun setColorFilter(index: Int, filterName: String, intensity: Float = 1f) {
         viewModelScope.launch {
             _project.update { current ->
                 if (current == null) return@update null
@@ -741,10 +741,13 @@ class VideoEditingViewModel : ViewModel() {
                     if (filterName == "none") {
                         ops.removeAt(existingIdx)
                     } else {
-                        ops[existingIdx] = (ops[existingIdx] as EditOperation.ColorFilter).copy(filterName = filterName)
+                        ops[existingIdx] = (ops[existingIdx] as EditOperation.ColorFilter).copy(
+                            filterName = filterName,
+                            intensity = intensity.coerceIn(0f, 1f)
+                        )
                     }
                 } else if (filterName != "none") {
-                    ops.add(EditOperation.ColorFilter(index, filterName))
+                    ops.add(EditOperation.ColorFilter(index, filterName, intensity.coerceIn(0f, 1f)))
                 }
                 _undoStack.value = _undoStack.value + current
                 _redoStack.value = emptyList()
@@ -759,6 +762,34 @@ class VideoEditingViewModel : ViewModel() {
             }
         }
     }
+
+    /**
+     * Live-updates the intensity of the currently applied filter on [index] while the user
+     * drags the intensity slider. Unlike [setColorFilter], this does NOT push to the undo
+     * stack on every call (that would flood undo history with one entry per drag tick) —
+     * call [commitColorFilterIntensity] (or just [setColorFilter]) once the user releases
+     * the slider to record a single undoable step.
+     */
+    fun previewColorFilterIntensity(index: Int, intensity: Float) {
+        _project.update { current ->
+            if (current == null) return@update null
+            val ops = current.operations.toMutableList()
+            val existingIdx = ops.indexOfFirst { it is EditOperation.ColorFilter && it.index == index }
+            if (existingIdx == -1) return@update current
+            ops[existingIdx] = (ops[existingIdx] as EditOperation.ColorFilter).copy(intensity = intensity.coerceIn(0f, 1f))
+            current.copy(operations = ops)
+        }
+    }
+
+    /** Call when the user releases the intensity slider to record one undoable step. */
+    fun commitColorFilterIntensity(index: Int) {
+        viewModelScope.launch {
+            val current = _project.value ?: return@launch
+            _undoStack.value = _undoStack.value + current
+            _redoStack.value = emptyList()
+        }
+    }
+
     fun updateMergeItemMask(index: Int, maskConfig: EditOperation.MaskConfig) {
         viewModelScope.launch {
             _project.update { current ->
@@ -1442,14 +1473,73 @@ class VideoEditingViewModel : ViewModel() {
         return if (filters.isNotEmpty()) filters.joinToString(",") else null
     }
 
-    private fun getFFmpegFilterForName(name: String): String? {
+    /**
+     * Linearly interpolate a parameter from its identity value toward a target value,
+     * scaled by [t] (0 = no effect / identity, 1 = full target value). This is how every
+     * preset below supports a continuous intensity slider without needing a split+blend
+     * filter graph: each ffmpeg filter is parametric, so we just interpolate its arguments.
+     */
+    private fun lerp(identity: Float, target: Float, t: Float): Float = identity + (target - identity) * t
+
+    /**
+     * Maps a filter preset name + intensity (0.0-1.0) to a real, runnable ffmpeg filter
+     * expression. Built from parametric filters (eq, colorbalance, colorchannelmixer, hue,
+     * unsharp, noise, vignette) so intensity is genuine interpolation, not a fixed on/off.
+     */
+    private fun getFFmpegFilterForName(name: String, intensity: Float = 1f): String? {
+        val t = intensity.coerceIn(0f, 1f)
+        fun eq(brightness: Float = 0f, contrast: Float = 1f, saturation: Float = 1f, gamma: Float = 1f): String {
+            val b = lerp(0f, brightness, t)
+            val c = lerp(1f, contrast, t)
+            val s = lerp(1f, saturation, t)
+            val g = lerp(1f, gamma, t)
+            return "eq=brightness=$b:contrast=$c:saturation=$s:gamma=$g"
+        }
+        fun balance(rs: Float = 0f, gs: Float = 0f, bs: Float = 0f, rm: Float = 0f, gm: Float = 0f, bm: Float = 0f, rh: Float = 0f, gh: Float = 0f, bh: Float = 0f): String {
+            val v = listOf(rs, gs, bs, rm, gm, bm, rh, gh, bh).map { lerp(0f, it, t) }
+            return "colorbalance=rs=${v[0]}:gs=${v[1]}:bs=${v[2]}:rm=${v[3]}:gm=${v[4]}:bm=${v[5]}:rh=${v[6]}:gh=${v[7]}:bh=${v[8]}"
+        }
+        fun sepiaChannelMixer(): String {
+            // Interpolate the color channel matrix from identity to a classic sepia matrix.
+            val rr = lerp(1f, 0.393f, t); val rg = lerp(0f, 0.769f, t); val rb = lerp(0f, 0.189f, t)
+            val gr = lerp(0f, 0.349f, t); val gg = lerp(1f, 0.686f, t); val gb = lerp(0f, 0.168f, t)
+            val br = lerp(0f, 0.272f, t); val bg = lerp(0f, 0.534f, t); val bb = lerp(1f, 0.131f, t)
+            return "colorchannelmixer=$rr:$rg:$rb:0:$gr:$gg:$gb:0:$br:$bg:$bb:0"
+        }
+        fun warmCoolMixer(warm: Boolean): String {
+            val shift = if (warm) 0.15f else -0.15f
+            val rr = lerp(1f, 1f + shift, t); val bb = lerp(1f, 1f - shift, t)
+            return "colorchannelmixer=$rr:0:0:0:0:1.0:0:0:0:0:$bb:0"
+        }
+        fun vignette(): String = "vignette=PI/${lerp(8f, 3.2f, t)}"
+        fun grain(): String = "noise=alls=${(lerp(0f, 18f, t)).toInt()}:allf=t+u"
+        fun sharpen(): String = "unsharp=5:5:${lerp(0f, 1.2f, t)}:5:5:0.0"
+
         return when (name.lowercase()) {
-            "vintage" -> "curves=preset=vintage"
-            "warm" -> "colorchannelmixer=1.1:0:0:0:0:1.0:0:0:0:0:0.9"
-            "cool" -> "colorchannelmixer=0.9:0:0:0:0:1.0:0:0:0:0:1.1"
-            "contrast" -> "curves=preset=strong_contrast"
-            "monochrome" -> "hue=s=0"
-            "vignette" -> "vignette"
+            "cinematic" -> "${eq(contrast = 1.18f, saturation = 0.88f)},${balance(rs = -0.08f, bs = 0.10f, rh = 0.06f)}"
+            "vintage" -> "${sepiaChannelMixer()},${eq(contrast = 0.92f, saturation = 0.85f)}"
+            "retro" -> "${eq(contrast = 0.95f, saturation = 0.7f, brightness = 0.02f)},${balance(rs = 0.06f, gs = 0.02f)},${vignette()}"
+            "portrait" -> "${eq(contrast = 1.06f, saturation = 1.1f)},${balance(rs = 0.04f, rm = 0.02f)}"
+            "hdr" -> "${eq(contrast = 1.28f, saturation = 1.3f)},${sharpen()}"
+            "neon" -> "${eq(contrast = 1.22f, saturation = 1.65f)},hue=h=${lerp(0f, 12f, t)}"
+            "moody" -> "${eq(brightness = -0.05f, contrast = 1.1f, saturation = 0.75f)},${balance(bs = 0.10f, bm = 0.04f)}"
+            "film" -> "${eq(contrast = 1.1f, saturation = 0.9f)},${grain()}"
+            "black & white", "black&white", "blackandwhite", "bw" -> eq(saturation = 0f, contrast = 1.08f)
+            "warm" -> warmCoolMixer(warm = true)
+            "cool" -> warmCoolMixer(warm = false)
+            "wedding" -> "${eq(brightness = 0.03f, contrast = 0.95f, saturation = 1.05f)},${balance(rs = 0.05f, rh = 0.03f)}"
+            "travel" -> eq(contrast = 1.15f, saturation = 1.35f)
+            "food" -> "${eq(contrast = 1.1f, saturation = 1.3f)},${balance(rs = 0.08f, gs = 0.02f)}"
+            "nature" -> "${eq(saturation = 1.2f)},${balance(gs = 0.06f, bs = 0.04f)}"
+            "night" -> "${eq(brightness = -0.08f, contrast = 1.2f, saturation = 0.9f)},${balance(bs = 0.12f)}"
+            "glow" -> eq(brightness = 0.06f, contrast = 0.95f, gamma = 1.1f)
+            "dreamy" -> "${eq(brightness = 0.05f, contrast = 0.85f, saturation = 0.9f)},${balance(rh = 0.06f, bs = 0.05f)}"
+            "matte" -> eq(brightness = 0.04f, contrast = 0.8f, saturation = 0.85f)
+            "teal & orange", "teal&orange", "tealorange" -> balance(rs = -0.10f, bs = 0.12f, rh = 0.15f, bh = -0.10f)
+            // Legacy names kept for backward compatibility with existing saved projects.
+            "contrast" -> eq(contrast = 1.4f)
+            "monochrome" -> eq(saturation = 0f)
+            "vignette" -> vignette()
             "negative" -> "curves=preset=negative"
             "crossprocess" -> "curves=preset=cross_process"
             else -> null
@@ -1914,7 +2004,7 @@ class VideoEditingViewModel : ViewModel() {
 
             for (i in 0 until inputCount) {
                 val colorFilterOp = operations.filterIsInstance<EditOperation.ColorFilter>().find { it.index == i }
-                val lutFilterExpr = colorFilterOp?.let { getFFmpegFilterForName(it.filterName) }
+                val lutFilterExpr = colorFilterOp?.let { getFFmpegFilterForName(it.filterName, it.intensity) }
                 val adjustOp = operations.filterIsInstance<EditOperation.Adjust>().find { it.index == i }
                 val adjustFilterExpr = adjustOp?.let { getFFmpegFilterForAdjust(it) }
 
@@ -2319,7 +2409,7 @@ class VideoEditingViewModel : ViewModel() {
 
         val prepFilters = mutableListOf<String>()
         if (colorFilterOp != null) {
-            val lutFilterExpr = getFFmpegFilterForName(colorFilterOp.filterName)
+            val lutFilterExpr = getFFmpegFilterForName(colorFilterOp.filterName, colorFilterOp.intensity)
             if (lutFilterExpr != null) {
                 prepFilters.add(lutFilterExpr)
             }
